@@ -9,7 +9,7 @@ using System.Threading;
 
 namespace HTTP_Server
 {
-    // First Web Server XDXDXDXD get rekt
+    // Web Server Unleashed!
     public static class WebServer
     {
         private static HttpListener listener;
