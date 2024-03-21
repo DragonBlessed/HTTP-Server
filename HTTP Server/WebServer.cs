@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Runtime.Remoting.Contexts;
 
 namespace HTTP_Server
 {
@@ -67,13 +68,55 @@ namespace HTTP_Server
             HttpListenerContext context = await listener.GetContextAsync();
             // Release the semaphore so that another listener can be immediately started
             sem.Release();
+            Log(context.Request);
 
-            string response = "Hello Browser!";
+            string response = "<html><head><meta http-equiv='content-type' content='text/html; charset=utf-8'/> </head>Hello Browser!</html>";
             byte[] encoded = Encoding.UTF8.GetBytes(response);
             context.Response.ContentLength64 = encoded.Length;
             context.Response.OutputStream.Write(encoded, 0, encoded.Length);
             context.Response.OutputStream.Close();
+            HttpListenerRequest request = context.Request;
+            string url = request.RawUrl;
+            int index = url.IndexOf("?");
+            string path = index != -1 ? url.Substring(0, index) : url; // Only the path, not any of the parameters
+            string verb = request.HttpMethod; // HTTP Methods: get, post, delete, etc.
+            string parms = index != -1 ? url.Substring(index + 1) : ""; // Params on the URL itself follow the URL and are separated by a ?
+            Dictionary<string, string> kvParams = GetKeyValues(parms); // Extract into key-value entries.
         }
+        public static Dictionary<string, string> GetKeyValues(string queryString)
+        {
+            Dictionary<string, string> keyValuePairs = new Dictionary<string, string>();
+
+            // Split the query string into individual key-value pairs
+            var pairs = queryString.Split('&');
+
+            foreach (var pair in pairs)
+            {
+                if (!string.IsNullOrEmpty(pair))
+                {
+                    var keyValue = pair.Split('=');
+                    if (keyValue.Length == 2)
+                    {
+                        string key = Uri.UnescapeDataString(keyValue[0]);
+                        string value = Uri.UnescapeDataString(keyValue[1]);
+                        keyValuePairs[key] = value; // Add or update the key-value pair in the dictionary
+                    }
+                }
+            }
+
+            return keyValuePairs;
+        }
+
+        // Log requests 
+        public static void Log(HttpListenerRequest request)
+        {
+            string url = request.Url.AbsoluteUri;
+            int index = url.IndexOf("http://");
+            string result = index != -1 ? url.Substring(index + 7) : url;
+
+            Console.WriteLine($"{request.RemoteEndPoint} {request.HttpMethod} /{result}");
+        }
+
 
         // Starts the web server
         public static void Start()
