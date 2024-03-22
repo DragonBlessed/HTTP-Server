@@ -7,6 +7,9 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Runtime.Remoting.Contexts;
+using System.Reflection;
+using System.IO;
+using System.Runtime.CompilerServices;
 
 namespace HTTP_Server
 {
@@ -14,6 +17,8 @@ namespace HTTP_Server
     public static class WebServer
     {
         private static HttpListener listener;
+        private static Semaphore sem = new Semaphore(20, 20);
+        private static Router router = new Router(); 
 
         // Returns list of IP addresses assigned to localhost network devices, such as hardwired ethernet, wireless, etc.
         private static List<IPAddress> GetLocalHostIPs()
@@ -41,8 +46,6 @@ namespace HTTP_Server
 
             return listener;
         }
-        public static int maxSimulataneousConnections = 20;
-        private static Semaphore sem = new Semaphore(maxSimulataneousConnections, maxSimulataneousConnections);
 
         // Begin listening to connections on a separate worker thread.
         private static void Start(HttpListener listener)
@@ -82,7 +85,10 @@ namespace HTTP_Server
             string verb = request.HttpMethod; // HTTP Methods: get, post, delete, etc.
             string parms = index != -1 ? url.Substring(index + 1) : ""; // Params on the URL itself follow the URL and are separated by a ?
             Dictionary<string, string> kvParams = GetKeyValues(parms); // Extract into key-value entries.
-        }
+
+            // Pass info to router
+            router.Route(verb, path, kvParams);
+        } 
         public static Dictionary<string, string> GetKeyValues(string queryString)
         {
             Dictionary<string, string> keyValuePairs = new Dictionary<string, string>();
@@ -106,6 +112,13 @@ namespace HTTP_Server
 
             return keyValuePairs;
         }
+        
+        public static string GetWebsitePath()
+        {
+            // Path of exe
+            string path = AppDomain.CurrentDomain.BaseDirectory;
+            return Path.Combine(path, "..", "..", "..", "Website");
+        }
 
         // Log requests 
         public static void Log(HttpListenerRequest request)
@@ -121,12 +134,96 @@ namespace HTTP_Server
         // Starts the web server
         public static void Start()
         {
-            List<IPAddress> localHostIPs = GetLocalHostIPs();
-            HttpListener listener = InitializeListener(localHostIPs);
-            Start(listener);
+            string websitePath = GetWebsitePath();
+            router.WebsitePath = websitePath; // Configure router with the website path
+            listener = InitializeListener(GetLocalHostIPs());
+            listener.Start();
+            Task.Run(() => RunServer(listener));
         }
+
+        public class ResponsePacket
+        {
+            public string Redirect { get; set; }
+            public byte[] Data { get; set; }
+            public string ContentType { get; set; }
+            public Encoding Encoding { get; set; }
+        }
+
+        public class ExtensionInfo
+        {
+            public string ContentType { get; set; }
+            public Func<string, string, ExtensionInfo, Task<ResponsePacket>> Loader { get; set; }
+        }
+
+        private static async Task<ResponsePacket> ImageLoader(string fullPath, string ext, ExtensionInfo extInfo)
+        {
+            byte[] data = await File.ReadAllBytesAsync(fullPath).ConfigureAwait(false);
+            return new ResponsePacket { Data = data, ContentType = extInfo.ContentType };
+        }
+
+        private static async Task<ResponsePacket> FileLoader(string fullPath, string ext, ExtensionInfo extInfo)
+        {
+            string text = await File.ReadAllTextAsync(fullPath).ConfigureAwait(false);
+            return new ResponsePacket { Data = Encoding.UTF8.GetBytes(text), ContentType = extInfo.ContentType, Encoding = Encoding.UTF8 };
+        }
+
+        private static async Task<ResponsePacket> PageLoader(string fullPath, string ext, ExtensionInfo extInfo)
+        {
+            string websitePath = ""; // Placeholder
+            if (string.IsNullOrEmpty(ext))
+            {
+                fullPath += ".html";
+            }
+
+            fullPath = Path.Combine(websitePath, "Pages", fullPath.TrimStart('/').Replace('/', '\\'));
+            return await FileLoader(fullPath, "html", extInfo);
+        }
+
+        public class Router
+        {
+            public string WebsitePath { get; set; }
+            private Dictionary<string, ExtensionInfo> extFolderMap;
+
+            public Router()
+            {
+                extFolderMap = new Dictionary<string, ExtensionInfo>()
+                {
+                    {"ico", new ExtensionInfo { Loader = ImageLoader, ContentType = "image/ico" }},
+                    // other content types added soon
+                };
+            }
+
+            public async Task<ResponsePacket> Route(string verb, string path, Dictionary<string, string> kvParams)
+            {
+                string ext = Path.GetExtension(path).TrimStart('.').ToLower();
+                if (extFolderMap.TryGetValue(ext, out ExtensionInfo extInfo))
+                {
+                    string fullPath = Path.Combine(WebsitePath, path.TrimStart('/').Replace('/', '\\'));
+                    return await extInfo.Loader(fullPath, ext, extInfo);
+                }
+
+                return null;
+            }
+        }
+        private static async Task Respond(HttpListenerResponse response, ResponsePacket resp)
+        {
+            if (resp == null) return; // Handle null response
+
+            response.ContentType = resp.ContentType;
+            response.ContentLength64 = resp.Data.Length;
+            if (resp.Encoding != null)
+            {
+                response.ContentEncoding = resp.Encoding;
+            }
+            response.StatusCode = (int)HttpStatusCode.OK;
+
+            await response.OutputStream.WriteAsync(resp.Data, 0, resp.Data.Length);
+            response.OutputStream.Close();
+        }
+
     }
-
-
-
 }
+
+
+
+
